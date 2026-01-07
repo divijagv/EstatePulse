@@ -1,60 +1,97 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
-import { Property, MarketStats } from "../types";
+import { GoogleGenAI } from "@google/genai";
+import { Property } from "../types";
 
-export const getMarketInsights = async (
-  filteredData: Property[],
-  stats: MarketStats,
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+export const searchLiveMarketData = async (
+  state: string,
   city: string,
-  neighborhood: string
-) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  neighborhood: string,
+  lat?: number,
+  lng?: number
+): Promise<{ properties: Property[], insights: string, sources: any[] }> => {
+  const model = "gemini-2.5-flash";
   
-  // Prepare a summarized context for the model
-  const dataSummary = {
-    city,
-    neighborhood: neighborhood === 'All' ? 'Whole City' : neighborhood,
-    totalListings: filteredData.length,
-    avgPrice: stats.avgPrice,
-    avgSqft: stats.avgSqft,
-    avgPricePerSqft: stats.avgPricePerSqft,
-    topPropertyType: getTopPropertyType(filteredData)
+  const query = `SEARCH GOOGLE MAPS AND SEARCH for 10-15 active real estate listings in ${neighborhood ? neighborhood + ', ' : ''}${city}, ${state}, USA. 
+  
+  IMPORTANT: You MUST use your available tools (googleMaps and googleSearch) to find real, current listings. 
+  
+  For each property found, output a data line strictly in this format:
+  [DATA] Neighborhood | Price | Sqft | Type | Year Built | Latitude | Longitude
+  
+  After the data lines, provide a brief market summary (2 paragraphs) analyzing price trends and inventory for ${city}, ${state}.`;
+
+  const config: any = {
+    systemInstruction: `You are a specialized US Real Estate Market Analyst. Your primary function is to use Google Maps and Google Search to find real-world property listings in specific USA regions. You always provide specific, structured data for the user. Current focus: ${city}, ${state}.`,
+    tools: [{ googleMaps: {} }, { googleSearch: {} }],
   };
 
-  const prompt = `
-    As a real estate expert, analyze the following market data for ${dataSummary.neighborhood}, ${dataSummary.city}:
-    - Total Listings: ${dataSummary.totalListings}
-    - Average Price: $${dataSummary.avgPrice.toLocaleString()}
-    - Average Sq Ft: ${dataSummary.avgSqft.toLocaleString()}
-    - Price per Sq Ft: $${dataSummary.avgPricePerSqft.toFixed(2)}
-    - Primary Property Type: ${dataSummary.topPropertyType}
-
-    Provide a concise 3-paragraph market analysis:
-    1. Current market temperature (Buyer's vs Seller's market).
-    2. Value assessment based on square footage and price.
-    3. Investment outlook for this specific area.
-    Use professional but accessible language. Keep it under 200 words.
-  `;
+  if (lat && lng) {
+    config.toolConfig = {
+      retrievalConfig: {
+        latLng: { latitude: lat, longitude: lng }
+      }
+    };
+  }
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        temperature: 0.7,
-        topP: 0.95,
-      }
+      model,
+      contents: query,
+      config,
     });
 
-    return response.text;
+    const text = response.text || "";
+    const properties = parsePropertiesFromText(text, city, state);
+    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+
+    return {
+      properties,
+      insights: text.split('[DATA]')[0].trim() || text,
+      sources
+    };
   } catch (error) {
-    console.error("Error generating insights:", error);
-    return "Unable to generate insights at this time. Please check your connection and try again.";
+    console.error("Gemini Market Search Error:", error);
+    throw error;
   }
 };
 
-function getTopPropertyType(data: Property[]): string {
-  const counts: Record<string, number> = {};
-  data.forEach(p => counts[p.type] = (counts[p.type] || 0) + 1);
-  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
+function parsePropertiesFromText(text: string, city: string, state: string): Property[] {
+  const lines = text.split('\n');
+  const properties: Property[] = [];
+  
+  lines.forEach((line, index) => {
+    if (line.includes('[DATA]')) {
+      const parts = line.replace('[DATA]', '').split('|').map(p => p.trim());
+      if (parts.length >= 7) {
+        const [neighborhood, priceStr, sqftStr, type, year, latStr, lngStr] = parts;
+        
+        const price = parseInt(priceStr.replace(/[^0-9]/g, '')) || 0;
+        const sqft = parseInt(sqftStr.replace(/[^0-9]/g, '')) || 0;
+        const lat = parseFloat(latStr.replace(/[^\d.-]/g, '')) || 0;
+        const lng = parseFloat(lngStr.replace(/[^\d.-]/g, '')) || 0;
+
+        if (price > 10000 && Math.abs(lat) > 1) {
+          properties.push({
+            id: `live-${index}-${Date.now()}`,
+            city,
+            state,
+            neighborhood: neighborhood || 'Unknown',
+            price,
+            sqft: sqft || 1500,
+            yearBuilt: parseInt(year) || 1990,
+            bedrooms: 3,
+            bathrooms: 2,
+            type: (type as any) || 'Single Family',
+            listingDate: new Date().toISOString().split('T')[0],
+            lat,
+            lng
+          });
+        }
+      }
+    }
+  });
+
+  return properties;
 }

@@ -1,5 +1,7 @@
 {
-  "name": "EstatePulse: Interactive Real Estate Explorer",
-  "description": "A high-performance interactive dashboard for real estate data exploration, featuring dynamic filtering, advanced data visualization with Recharts, and AI-powered market insights using Gemini.",
-  "requestFramePermissions": []
+  "name": "EstatePulse: Live US Real Estate Explorer",
+  "description": "A dynamic dashboard for USA real estate exploration using Gemini 2.5 with Google Maps grounding for real-world market data.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
 }
